@@ -114,7 +114,7 @@ class FedLeaDigits(FederatedDataset):
              transforms.ToTensor(),
              transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
              self.get_normalization_transform()])
-
+        print("Downloading datasets for domains: ", using_list)
         for _, domain in enumerate(using_list):
             if domain in ['syn', 'mnistm']:
                 train_dataset = ImageFolder_Custom(data_name=domain, root=data_path(), train=True,
@@ -126,7 +126,7 @@ class FedLeaDigits(FederatedDataset):
                 train_dataset = MyDigits(data_path(), train=True,
                                          download=False, transform=nor_transform, data_name=domain)
             train_dataset_list.append(train_dataset)
-
+        print("Using datasets for domains: ", using_list)
         for _, domain in enumerate(self.DOMAINS_LIST):
             if domain in ['syn', 'mnistm']:
                 test_dataset = ImageFolder_Custom(data_name=domain, root=data_path(), train=False,
