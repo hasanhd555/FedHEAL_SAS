@@ -124,7 +124,7 @@ class FedLeaDigits(FederatedDataset):
                                          download=True, transform=sin_chan_nor_transform, data_name=domain)
             else:
                 train_dataset = MyDigits(data_path(), train=True,
-                                         download=False, transform=nor_transform, data_name=domain)
+                                         download=True, transform=nor_transform, data_name=domain)
             train_dataset_list.append(train_dataset)
         print("Using datasets for domains: ", using_list)
         for _, domain in enumerate(self.DOMAINS_LIST):
@@ -136,7 +136,7 @@ class FedLeaDigits(FederatedDataset):
                                         download=True, transform=sin_chan_test_transform, data_name=domain)
             else:
                 test_dataset = MyDigits(data_path(), train=False,
-                                        download=False, transform=test_transform, data_name=domain)
+                                        download=True, transform=test_transform, data_name=domain)
 
             test_dataset_list.append(test_dataset)
             
