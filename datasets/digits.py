@@ -126,9 +126,14 @@ class FedLeaDigits(FederatedDataset):
                 train_dataset = MyDigits(data_path(), train=True,
                                          download=True, transform=nor_transform, data_name=domain)
             train_dataset_list.append(train_dataset)
-        print("Using datasets for domains: ", using_list)
+       
         print("DOMAINS_LIST: ", self.DOMAINS_LIST)
-        for _, domain in enumerate(using_list):
+        using_domains_list=[]
+        #reomve 'svn from'
+        for domain in using_list:
+            if domain != 'svhn':
+                using_domains_list.append(domain)
+        for _, domain in enumerate(using_domains_list):
             if domain in ['syn', 'mnistm']:
                 print("In syn or mnistm")
                 test_dataset = ImageFolder_Custom(data_name=domain, root=data_path(), train=False,
