@@ -33,7 +33,7 @@ class FedAvGHEAL(FederatedModel):
     def loc_update(self, priloader_list):
         online_clients = self.online_clients_sequence[self.epoch_index]
         self.online_clients = online_clients
-        print(self.online_clients)
+        print("online clients: ",self.online_clients)
 
         for i in online_clients:
             self._train_net(i, self.nets_list[i], priloader_list[i])
