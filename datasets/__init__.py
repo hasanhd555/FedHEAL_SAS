@@ -11,6 +11,7 @@ def get_all_models():
 
 Priv_NAMES = {}
 for model in get_all_models():
+    print(model)
     mod = importlib.import_module('datasets.' + model)
     dataset_classes_name = [x for x in mod.__dir__() if 'type' in str(type(getattr(mod, x))) and 'FederatedDataset' in str(inspect.getmro(getattr(mod, x))[1:])]
     for d in dataset_classes_name:
