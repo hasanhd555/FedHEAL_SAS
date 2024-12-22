@@ -129,6 +129,7 @@ class FedLeaDigits(FederatedDataset):
         print("Using datasets for domains: ", using_list)
         for _, domain in enumerate(self.DOMAINS_LIST):
             if domain in ['syn', 'mnistm']:
+                print("In syn or mnistm")
                 test_dataset = ImageFolder_Custom(data_name=domain, root=data_path(), train=False,
                                                   transform=test_transform)
             elif domain in ['mnist', 'usps']:
