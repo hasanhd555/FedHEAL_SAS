@@ -129,9 +129,9 @@ class FedLeaDigits(FederatedDataset):
        
         print("DOMAINS_LIST: ", self.DOMAINS_LIST)
         using_domains_list=[]
-        #reomve 'svn from'
+        #reomve 'syn from'
         for domain in using_list:
-            if domain != 'svhn':
+            if domain != 'syn':
                 using_domains_list.append(domain)
         for _, domain in enumerate(using_domains_list):
             if domain in ['syn', 'mnistm']:
