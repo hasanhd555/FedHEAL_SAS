@@ -28,7 +28,7 @@ class CsvWriter:
 
     def generate_filename(self, base_name):
         params_to_include = ['dataset', 'model', 'seed', 'parti_num', 'communication_epoch', 
-                            'averaging', 'wHEAL', 'threshold', 'beta', 'qfedavg']
+                            'averaging', 'wHEAL', 'threshold', 'beta']
 
         param_strings = [f"{param}_{getattr(self.args, param)}" for param in params_to_include]
 

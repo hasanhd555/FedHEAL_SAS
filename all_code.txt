@@ -1,0 +1,1209 @@
+main.py:
+import os
+import sys
+import socket
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
+import warnings
+
+warnings.filterwarnings("ignore")
+
+conf_path = os.getcwd()
+sys.path.append(conf_path)
+sys.path.append(conf_path + '/datasets')
+sys.path.append(conf_path + '/backbone')
+sys.path.append(conf_path + '/models')
+from datasets import Priv_NAMES as DATASET_NAMES
+from models import get_all_models
+from argparse import ArgumentParser
+from utils.args import add_management_args
+from datasets import get_prive_dataset
+from models import get_model
+from utils.training import train
+from utils.best_args import best_args
+from utils.conf import set_random_seed
+
+import torch
+import uuid
+import datetime
+
+
+
+def parse_args():
+    parser = ArgumentParser(description='You Only Need Me', allow_abbrev=False)
+    parser.add_argument('--device_id', type=int, default=0, help='The Device Id for Experiment')
+    
+    parser.add_argument('--communication_epoch', type=int, default=200, help='The Communication Epoch in Federated Learning')
+    parser.add_argument('--local_epoch', type=int, default=10, help='The Local Epoch for each Participant')
+    parser.add_argument('--parti_num', type=int, default=20, help='The Number for Participants')
+    parser.add_argument('--seed', type=int, default=0, help='The random seed.')
+    parser.add_argument('--rand_dataset', type=int, default=0, help='The random seed.')
+
+    parser.add_argument('--model', type=str, default='fedavgheal', 
+                        help='Model name.', choices=get_all_models())
+    parser.add_argument('--structure', type=str, default='homogeneity')
+    parser.add_argument('--dataset', type=str, default='fl_digits', 
+                        choices=DATASET_NAMES, help='Which scenario to perform experiments on.')
+    parser.add_argument('--alpha', type=float, default=0.5, help='alpha of dirichlet sampler.')
+    parser.add_argument('--online_ratio', type=float, default=1, help='The Ratio for Online Clients')
+    parser.add_argument('--learning_decay', type=int, default=0, help='The Option for Learning Rate Decay')
+    parser.add_argument('--averaging', type=str, default='weight', help='The Option for averaging strategy')
+
+    parser.add_argument('--wHEAL', type=int, default=1, help='The CORE of the FedHEAL decides whether to add HEAL to other FL method')
+    parser.add_argument('--threshold', type=float, default=0.3, help='threshold of HEAL')
+    parser.add_argument('--beta', type=float, default=0.4, help='momentum update beta')
+     
+    parser.add_argument('--mnist', type=int, default=5, help='Number of mnist clients')
+    parser.add_argument('--usps', type=int, default=5, help='Number of usps clients')
+    parser.add_argument('--svhn', type=int, default=5, help='Number of svhn clients')
+    parser.add_argument('--syn', type=int, default=5, help='Number of syn clients')
+    
+    parser.add_argument('--caltech', type=int, default=5, help='Number of caltech clients')
+    parser.add_argument('--amazon', type=int, default=5, help='Number of amazon clients')
+    parser.add_argument('--webcam', type=int, default=5, help='Number of webcam clients')
+    parser.add_argument('--dslr', type=int, default=5, help='Number of dslr clients')
+    
+    torch.set_num_threads(4)
+    add_management_args(parser)
+    args = parser.parse_args()
+
+    best = best_args[args.dataset][args.model]
+
+    for key, value in best.items():
+        setattr(args, key, value)
+
+    if args.seed is not None:
+        set_random_seed(args.seed)
+    return args
+
+
+def main(args=None):
+    if args is None:
+        args = parse_args()
+
+    args.conf_jobnum = str(uuid.uuid4())
+    args.conf_timestamp = str(datetime.datetime.now())
+    args.conf_host = socket.gethostname()
+
+    priv_dataset = get_prive_dataset(args)
+
+    backbones_list = priv_dataset.get_backbone(args.parti_num, None)
+
+    model = get_model(backbones_list, args, priv_dataset.get_transform())
+    
+    args.arch = model.nets_list[0].name
+
+    print('{}_{}_{}_{}_{}'.format(args.model, args.parti_num, args.dataset, args.communication_epoch, args.local_epoch))
+
+    train(model, priv_dataset, args)
+
+
+if __name__ == '__main__':
+    main()
+
+
+
+.backbone/ResNet.py:
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.functional import relu, avg_pool2d
+from typing import List
+
+
+def conv3x3(in_planes: int, out_planes: int, stride: int = 1) -> F.conv2d:
+    """
+    Instantiates a 3x3 convolutional layer with no bias.
+    :param in_planes: number of input channels
+    :param out_planes: number of output channels
+    :param stride: stride of the convolution
+    :return: convolutional layer
+    """
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+
+
+class BasicBlock(nn.Module):
+    """
+    The basic block of ResNet.
+    """
+    expansion = 1
+
+    def __init__(self, in_planes: int, planes: int, stride: int = 1) -> None:
+        """
+        Instantiates the basic block of the network.
+        :param in_planes: the number of input channels
+        :param planes: the number of channels (to be possibly expanded)
+        """
+        super(BasicBlock, self).__init__()
+        self.conv1 = conv3x3(in_planes, planes, stride)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_planes != self.expansion * planes:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1,
+                          stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * planes)
+            )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute a forward pass.
+        :param x: input tensor (batch_size, input_size)
+        :return: output tensor (10)
+        """
+        out = relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = relu(out)
+        return out
+
+
+class ResNet(nn.Module):
+    """
+    ResNet network architecture. Designed for complex datasets.
+    """
+
+    def __init__(self, block: BasicBlock, num_blocks: List[int],
+                 num_classes: int, nf: int, name:str) -> None:
+        """
+        Instantiates the layers of the network.
+        :param block: the basic ResNet block
+        :param num_blocks: the number of blocks per layer
+        :param num_classes: the number of output classes
+        :param nf: the number of filters
+        """
+        super(ResNet, self).__init__()
+        self.name = name
+        self.in_planes = nf
+        self.block = block
+        self.num_classes = num_classes
+        self.nf = nf
+        self.conv1 = conv3x3(3, nf * 1)
+        self.bn1 = nn.BatchNorm2d(nf * 1)
+        self.layer1 = self._make_layer(block, nf * 1, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, nf * 2, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, nf * 4, num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(block, nf * 8, num_blocks[3], stride=2)
+        self.linear = nn.Linear(nf * 8 * block.expansion, num_classes)
+
+        self._features = nn.Sequential(self.conv1,
+                                       self.bn1,
+                                       nn.ReLU(),
+                                       self.layer1,
+                                       self.layer2,
+                                       self.layer3,
+                                       self.layer4)
+        self.cls = self.linear
+
+        self.encoder = nn.Sequential(
+            nn.Linear(nf * 8 * block.expansion, nf * 8 * block.expansion),
+            nn.ReLU(inplace=True),
+            nn.Linear(nf * 8 * block.expansion, 512)
+        )
+
+    def _make_layer(self, block: BasicBlock, planes: int,
+                    num_blocks: int, stride: int) -> nn.Module:
+        """
+        Instantiates a ResNet layer.
+        :param block: ResNet basic block
+        :param planes: channels across the network
+        :param num_blocks: number of blocks
+        :param stride: stride
+        :return: ResNet layer
+        """
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def features(self, x: torch.Tensor) -> torch.Tensor:
+        out = self._features(x)
+        out = avg_pool2d(out, out.shape[2])
+        feat = out.view(out.size(0), -1)
+        return feat
+
+    def encoders(self, x: torch.Tensor) -> torch.Tensor:
+        out = self._features(x)
+        out = avg_pool2d(out, out.shape[2])
+        feat = out.view(out.size(0), -1)
+        feat = self.encoder(feat)
+        return feat
+
+    def classifier(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.cls(x)
+        return out
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = relu(self.bn1(self.conv1(x)))  # 64, 32, 32
+        if hasattr(self, 'maxpool'):
+            out = self.maxpool(out)
+        out = self.layer1(out)  # -> 64, 32, 32
+        out = self.layer2(out)  # -> 128, 16, 16
+        out = self.layer3(out)  # -> 256, 8, 8
+        out = self.layer4(out)  # -> 512, 4, 4
+        out = avg_pool2d(out, out.shape[2])  # -> 512, 1, 1
+        feature = out.view(out.size(0), -1)  # 512
+        out = self.cls(feature)
+        return  out
+
+
+
+def resnet10(nclasses: int, nf: int = 64) -> ResNet:
+    """
+    Instantiates a ResNet18 network.
+    :param nclasses: number of output classes
+    :param nf: number of filters
+    :return: ResNet network
+    """
+    return ResNet(BasicBlock, [1, 1, 1, 1], nclasses, nf,'res10')
+
+
+
+def resnet12(nclasses: int, nf: int = 64) -> ResNet:
+    """
+    Instantiates a ResNet18 network.
+    :param nclasses: number of output classes
+    :param nf: number of filters
+    :return: ResNet network
+    """
+    return ResNet(BasicBlock, [2, 1, 1, 1], nclasses, nf,'res12')
+
+def resnet18(nclasses: int, nf: int = 64) -> ResNet:
+    """
+    Instantiates a ResNet18 network.
+    :param nclasses: number of output classes
+    :param nf: number of filters
+    :return: ResNet network
+    """
+    return ResNet(BasicBlock, [2, 2, 2, 2], nclasses, nf,'res18')
+
+def resnet20(nclasses: int, nf: int = 64) -> ResNet:
+    """
+    Instantiates a ResNet18 network.
+    :param nclasses: number of output classes
+    :param nf: number of filters
+    :return: ResNet network
+    """
+    return ResNet(BasicBlock, [1, 3, 3, 3], nclasses, nf,'res20')
+
+def resnet34(nclasses: int, nf: int = 64) -> ResNet:
+    """
+    Instantiates a ResNet18 network.
+    :param nclasses: number of output classes
+    :param nf: number of filters
+    :return: ResNet network
+    """
+    return ResNet(BasicBlock, [3, 4, 6, 3], nclasses, nf,'res34')
+
+models/utils/federated_model.py:
+import numpy as np
+import torch.nn as nn
+import torch
+import torchvision
+from argparse import Namespace
+from utils.conf import get_device
+from utils.conf import checkpoint_path
+from utils.util import create_if_not_exists
+import os
+import copy
+
+class FederatedModel(nn.Module):
+    """
+    Federated learning model.
+    """
+    NAME = None
+    N_CLASS = None
+
+    def __init__(self, nets_list: list,
+                 args: Namespace, transform: torchvision.transforms) -> None:
+        super(FederatedModel, self).__init__()
+        self.nets_list = nets_list
+        self.args = args
+        self.transform = transform
+
+        self.random_state = np.random.RandomState()
+        self.online_num = np.ceil(self.args.parti_num * self.args.online_ratio).item()
+        self.online_num = int(self.online_num)
+
+        self.global_net = None
+        self.device = get_device(device_id=self.args.device_id)
+        self.freq = None
+        self.local_epoch = args.local_epoch
+        self.local_lr = args.local_lr
+        self.online_clients_sequence = None
+        self.trainloaders = None
+        self.testloaders = None
+        self.dataset_name_list = None 
+        self.epoch_index = 0 
+        self.checkpoint_path = checkpoint_path() + self.args.dataset + '/' + self.args.structure + '/'
+        create_if_not_exists(self.checkpoint_path)
+        self.net_to_device()
+
+    def net_to_device(self):
+        for net in self.nets_list:
+            net.to(self.device)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+    def ini(self):
+        pass
+
+    def loc_update(self, priloader_list):
+        pass
+
+    def load_pretrained_nets(self):
+        if self.load:
+            for j in range(self.args.parti_num):
+                pretrain_path = os.path.join(self.checkpoint_path, 'pretrain')
+                save_path = os.path.join(pretrain_path, str(j) + '.ckpt')
+                self.nets_list[j].load_state_dict(torch.load(save_path, self.device))
+        else:
+            pass
+
+    def copy_nets2_prevnets(self):
+        for net_id, net in enumerate(self.nets_list):
+            self.prev_nets_list[net_id] = copy.deepcopy(net)
+    
+    def get_params_diff_weights(self):
+        weight_dict = {}
+        
+        for client in self.online_clients:
+            client_distance = self.euclidean_distance[client]
+            
+            delta_weight = (1 - self.args.beta) * (self.previous_delta_weights.get(client, 0)) + self.args.beta * ((client_distance) / sum(self.euclidean_distance.values()))
+
+            new_weight = self.previous_weights.get(client, 1/self.online_num) + delta_weight
+            weight_dict[client] = new_weight
+            
+            self.previous_weights[client] = new_weight
+            self.previous_delta_weights[client] = delta_weight
+        
+        total_weight = sum(weight_dict.values())
+        for client in self.online_clients:
+            weight_dict[client] /= total_weight
+        return weight_dict
+
+    def compute_distance(self, index, update_diff, param_names):
+        euclidean_distance = 0
+        for key in update_diff:
+            if key in param_names:
+                euclidean_distance += torch.norm(update_diff[key]).item()
+
+        self.euclidean_distance[index] = euclidean_distance
+     
+  
+    def aggregate_nets(self, freq=None):
+        nets_list = self.nets_list
+
+        online_clients = self.online_clients
+        global_w = self.global_net.state_dict()
+
+        if freq == None and self.args.averaging == 'weight':
+            freq = {}
+            online_clients_len = {}
+            for i in online_clients:
+                online_clients_len[i] = len(self.trainloaders[i].sampler)
+            online_clients_all = sum(online_clients_len.values())
+            for i in online_clients:
+                freq[i] = online_clients_len[i] / online_clients_all
+        elif freq == None:  
+            freq = {}
+            online_num = len(online_clients)
+            for i in online_clients:
+                freq[i] = 1 / online_num
+        
+
+        first = True
+        for net_id in online_clients:
+            net = nets_list[net_id]
+            net_para = net.state_dict()
+            if first:
+                first = False
+                for key in net_para:
+                    global_w[key] = net_para[key] * freq[net_id]  
+            else:
+                for key in net_para:
+                    global_w[key] += net_para[key] * freq[net_id] 
+
+        print('\t\t'.join(f'{i}:{freq[i]:.3f}' for i in online_clients))
+        
+        self.global_net.load_state_dict(global_w)
+        
+        for i in online_clients:
+            self.nets_list[i].load_state_dict(global_w)
+    
+    def aggregate_nets_parameter(self, freq=None):
+        
+        online_clients = self.online_clients
+        global_w = self.global_net.state_dict()
+
+        if freq is None and self.args.averaging == 'weight':
+            freq = {}
+            online_clients_len = {}
+            for i in online_clients:
+                online_clients_len[i] = len(self.trainloaders[i].sampler)
+            online_clients_all = sum(online_clients_len.values())
+            for i in online_clients:
+                freq[i] = online_clients_len[i] / online_clients_all
+        elif freq is None:
+            freq = {}
+            online_num = len(online_clients)
+            for i in online_clients:
+                freq[i] = 1 / online_num
+
+        global_params_new = copy.deepcopy(global_w)
+
+        for param_key in global_params_new:
+            
+            adjusted_weights_list = []
+            for client_id in online_clients:
+                weight_for_client = freq[client_id] * self.mask_dict[client_id][param_key]
+                adjusted_weights_list.append(weight_for_client)
+            
+            adjusted_weights = torch.stack(adjusted_weights_list).to(self.device)
+            
+            total_weight_per_param = torch.sum(adjusted_weights, dim=0).unsqueeze(0).to(self.device)
+            
+            original_weights = torch.Tensor([freq[client_id] for client_id in online_clients]).to(self.device)
+            original_weights = original_weights.view(len(online_clients), *[1 for _ in range(len(adjusted_weights.shape)-1)]).expand_as(adjusted_weights)
+            weights_for_param = torch.where(total_weight_per_param == 0, original_weights, adjusted_weights / total_weight_per_param)
+            
+       
+            for idx, client_id in enumerate(online_clients):
+                update_for_client = self.client_update[client_id][param_key]
+                weight_for_client = weights_for_param[idx]
+                
+                # if "num_batches_tracked" in param_key:
+                #     global_params_new[param_key] = global_params_new[param_key] - (update_for_client.float() * weight_for_client).long()
+                # else:
+                global_params_new[param_key] = global_params_new[param_key] - update_for_client * weight_for_client
+
+        
+        self.global_net.load_state_dict(global_params_new)
+
+        
+        for i in online_clients:
+            self.nets_list[i].load_state_dict(global_params_new)
+    
+    def consistency_mask(self, client_id, update_diff):
+        updates = update_diff 
+        if self.epoch_index == 0:
+            self.increase_history[client_id] = {key: torch.zeros_like(val) for key, val in updates.items()}
+            
+            for key in updates:
+                self.increase_history[client_id][key] = (updates[key] >= 0).float()
+                
+            return {key: torch.ones_like(val) for key, val in updates.items()}
+        
+        mask = {}
+        for key in updates:
+            positive_consistency = self.increase_history[client_id][key]
+            negative_consistency = 1 - self.increase_history[client_id][key]
+            
+            consistency = torch.where(updates[key] >= 0, positive_consistency, negative_consistency)
+            
+            mask[key] = (consistency > self.args.threshold).float()
+            
+        for key in updates:
+            increase = (updates[key] >= 0).float()
+            self.increase_history[client_id][key] = (self.increase_history[client_id][key] * self.epoch_index + increase) / (self.epoch_index + 1)
+            
+        return mask
+    
+    
+
+models/__init__.py:
+import os
+import importlib
+
+def get_all_models():
+    return [model.split('.')[0] for model in os.listdir('models')
+            if not model.find('__') > -1 and 'py' in model]
+
+names = {}
+for model in get_all_models():
+    mod = importlib.import_module('models.' + model)
+    class_name = {x.lower():x for x in mod.__dir__()}[model.replace('_', '')]
+    names[model] = getattr(mod, class_name)
+
+def get_model(nets_list,args, transform):
+    return names[args.model](nets_list,args,transform)
+
+models/fedavg.py:
+import torch.optim as optim
+import torch.nn as nn
+import torch
+from tqdm import tqdm
+import copy
+from utils.args import *
+from models.utils.federated_model import FederatedModel
+
+class FedAvG(FederatedModel):
+    NAME = 'fedavg'
+    COMPATIBILITY = ['homogeneity']
+
+    def __init__(self, nets_list,args, transform):
+        super(FedAvG, self).__init__(nets_list,args,transform)
+
+    def ini(self):
+        self.global_net = copy.deepcopy(self.nets_list[0])
+        global_w = self.nets_list[0].state_dict()
+        for _,net in enumerate(self.nets_list):
+            net.load_state_dict(global_w)
+            
+    def loc_update(self,priloader_list):
+        online_clients = self.online_clients_sequence[self.epoch_index]
+        self.online_clients = online_clients
+        print(self.online_clients) 
+
+        for i in online_clients:
+            self._train_net(i,self.nets_list[i], priloader_list[i])
+        self.aggregate_nets()
+
+    def _train_net(self,index,net,train_loader):
+        net = net.to(self.device)
+        net.train()
+        optimizer = optim.SGD(net.parameters(), lr=self.local_lr, momentum=0.9, weight_decay=1e-5)
+        criterion = nn.CrossEntropyLoss()
+        criterion.to(self.device)
+        iterator = tqdm(range(self.local_epoch))
+        for _ in iterator:
+            for batch_idx, (images, labels) in enumerate(train_loader):
+                images = images.to(self.device)
+                labels = labels.to(self.device)
+                outputs = net(images)
+                loss = criterion(outputs, labels)
+                optimizer.zero_grad()
+                loss.backward()
+                iterator.desc = "Local Pariticipant %d loss = %0.3f" % (index,loss)
+                optimizer.step()
+
+
+models/fedavgheal.py:
+import torch.optim as optim
+import torch.nn as nn
+import torch
+from tqdm import tqdm
+import numpy as np
+import copy
+from utils.args import *
+from models.utils.federated_model import FederatedModel
+
+class FedAvGHEAL(FederatedModel):
+    NAME = 'fedavgheal'
+    COMPATIBILITY = ['homogeneity']
+
+    def __init__(self, nets_list,args, transform):
+        super(FedAvGHEAL, self).__init__(nets_list,args,transform)
+        
+        self.client_update = {}
+        self.increase_history = {}
+        self.mask_dict = {}
+        
+        self.euclidean_distance = {}
+        self.previous_weights = {}
+        self.previous_delta_weights = {}
+        
+
+    def ini(self):
+        self.global_net = copy.deepcopy(self.nets_list[0])
+        global_w = self.nets_list[0].state_dict()
+        for _,net in enumerate(self.nets_list):
+            net.load_state_dict(global_w)
+
+ 
+    def loc_update(self, priloader_list):
+        online_clients = self.online_clients_sequence[self.epoch_index]
+        self.online_clients = online_clients
+        print("online clients: ",self.online_clients)
+
+        for i in online_clients:
+            self._train_net(i, self.nets_list[i], priloader_list[i])
+            
+            if self.args.wHEAL == 1:
+                net_params = self.nets_list[i].state_dict()
+                global_params = self.global_net.state_dict()
+                param_names = [name for name, _ in self.nets_list[i].named_parameters()]
+                update_diff = {key: global_params[key] - net_params[key] for key in global_params}
+                
+                mask = self.consistency_mask(i, update_diff)
+                self.mask_dict[i] = mask
+                masked_update = {key: update_diff[key] * mask[key] for key in update_diff} 
+                self.client_update[i] = masked_update
+                    
+                self.compute_distance(i, self.client_update[i], param_names)
+                
+        freq = self.get_params_diff_weights()
+        self.aggregate_nets_parameter(freq)
+
+
+    
+    def _train_net(self,index,net,train_loader):
+        net = net.to(self.device)
+        net.train()
+        optimizer = optim.SGD(net.parameters(), lr=self.local_lr, momentum=0.9, weight_decay=1e-5)
+        criterion = nn.CrossEntropyLoss()
+        criterion.to(self.device)
+        iterator = tqdm(range(self.local_epoch))
+        for _ in iterator:
+            for batch_idx, (images, labels) in enumerate(train_loader):
+                images = images.to(self.device)
+                labels = labels.to(self.device)
+                outputs = net(images)
+                loss = criterion(outputs, labels)
+                optimizer.zero_grad()
+                loss.backward()
+                iterator.desc = "Local Pariticipant %d loss = %0.3f" % (index,loss)
+                optimizer.step()
+        
+
+
+
+utils/__init__.py:
+import os
+
+
+def create_if_not_exists(path: str) -> None:
+    """
+    Creates the specified folder if it does not exist.
+    :param path: the complete path of the folder to be created
+    """
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+utils/args.py:
+from argparse import ArgumentParser
+from datasets import Priv_NAMES as DATASET_NAMES
+from models import get_all_models
+
+
+def add_experiment_args(parser: ArgumentParser) -> None:
+    """
+    Adds the arguments used by all the models.
+    :param parser: the parser instance
+    """
+    parser.add_argument('--dataset', type=str, required=True,
+                        choices=DATASET_NAMES,
+                        help='Which dataset to perform experiments on.')
+
+    parser.add_argument('--model', type=str, required=True,
+                        help='Model name.', choices=get_all_models())
+
+    parser.add_argument('--lr', type=float, required=True,
+                        help='Learning rate.')
+
+    parser.add_argument('--optim_wd', type=float, default=0.,
+                        help='optimizer weight decay.')
+
+    parser.add_argument('--optim_mom', type=float, default=0.,
+                        help='optimizer momentum.')
+
+    parser.add_argument('--optim_nesterov', type=int, default=0,
+                        help='optimizer nesterov momentum.')    
+
+    parser.add_argument('--n_epochs', type=int,
+                        help='Batch size.')
+
+    parser.add_argument('--batch_size', type=int,
+                        help='Batch size.')
+
+def add_management_args(parser: ArgumentParser) -> None:
+    parser.add_argument('--csv_log', type=int,
+                        help='Enable csv logging',default=0)
+
+utils/best_args.py:
+best_args = {
+    'fl_digits': {
+
+        
+        'fedavg': {
+                'local_lr': 0.001,
+                'local_batch_size': 64,
+        },
+        
+        'fedavgheal': {
+                'local_lr': 0.001,
+                'local_batch_size': 64,
+        },
+         
+    },
+    'fl_officecaltech': {
+
+        'fedavg': {
+            'local_lr': 0.001,
+            'local_batch_size': 16,
+        },
+       
+        'fedavgheal': {
+                'local_lr': 0.001,
+                'local_batch_size': 16,
+        },
+     
+    }   
+} 
+
+utils/conf.py:
+import random
+import torch
+import numpy as np
+
+
+def get_device(device_id) -> torch.device:
+    return torch.device("cuda:" + str(device_id) if torch.cuda.is_available() else "cpu")
+
+
+def data_path() -> str:
+    return './data0/' # type your data path here.
+
+def base_path() -> str:
+    return './data/'
+
+def log_path():
+    return './Logs/'
+
+def checkpoint_path() -> str:
+    return './checkpoint/'
+
+
+def set_random_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+utils/logger.py:
+import copy
+import os
+import csv
+from utils.conf import base_path, log_path
+from utils.util import create_if_not_exists
+useless_args = ['pub_aug','public_len','public_dataset','structure', 'model', 'csv_log', 'device_id', 'seed',
+                'tensorboard','conf_jobnum','conf_timestamp','conf_host']
+import pickle
+import datetime
+
+class CsvWriter:
+    def __init__(self, args, private_dataset):
+        self.args = args
+        self.private_dataset = private_dataset
+        self.model_folder_path = self._model_folder_path()
+        self.para_foloder_path = self._write_args()
+        print(self.para_foloder_path)
+
+    def _model_folder_path(self):
+        args = self.args
+        data_path = log_path() + args.dataset
+        create_if_not_exists(data_path)
+
+        model_path = data_path+'/'+args.model
+        create_if_not_exists(model_path)
+        return model_path
+
+
+    def generate_filename(self, base_name):
+        params_to_include = ['dataset', 'model', 'seed', 'parti_num', 'communication_epoch', 
+                            'averaging', 'wHEAL', 'threshold', 'beta', 'qfedavg']
+
+        param_strings = [f"{param}_{getattr(self.args, param)}" for param in params_to_include]
+
+        current_time = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        filename = f"{base_name}_{'_'.join(param_strings)}_{current_time}.csv"
+
+        return os.path.join(self.para_foloder_path, filename)
+
+
+    def write_acc(self,accs_dict, mean_acc_list):
+        acc_path = os.path.join(self.para_foloder_path, 'all_acc.csv')
+        self._write_all_acc(accs_dict)
+
+        mean_acc_path = os.path.join(self.para_foloder_path, 'mean_acc.csv')
+        self._write_mean_acc(mean_acc_list)
+
+    def _write_args(self) -> None:
+        args = copy.deepcopy((self.args))
+        args = vars(args)
+        for cc in useless_args:
+            if cc in args:
+                del args[cc]
+
+        for key, value in args.items():
+            args[key] = str(value)
+
+        paragroup_dirs = os.listdir(self.model_folder_path)
+        n_para = len(paragroup_dirs)
+        exist_para = False
+
+        for para in paragroup_dirs:
+            dict_from_csv = {}
+            key_value_list = []
+            para_path = os.path.join(self.model_folder_path, para)
+            args_path = para_path+'/args.csv'
+            with open(args_path, mode='r') as inp:
+                reader = csv.reader(inp)
+                for rows in reader:
+                    key_value_list.append(rows)
+            for index,_ in enumerate(key_value_list[0]):
+                dict_from_csv[key_value_list[0][index]]=key_value_list[1][index]
+            if args == dict_from_csv:
+                path = para_path
+                exist_para = True
+                break
+        if exist_para==False:
+            path = os.path.join(self.model_folder_path, 'para' + str(n_para + 1))
+            k=1
+            while os.path.exists(path):
+                path = os.path.join(self.model_folder_path, 'para' + str(n_para +k))
+                k = k+1
+            create_if_not_exists(path)
+
+            columns = list(args.keys())
+
+            write_headers = True
+            args_path = path+'/args.csv'
+            with open(args_path, 'a') as tmp:
+                writer = csv.DictWriter(tmp, fieldnames=columns)
+                if write_headers:
+                    writer.writeheader()
+                writer.writerow(args)
+        return path
+
+    def _write_mean_acc(self, acc_list):
+        mean_path = self.generate_filename('mean_acc')
+        with open(mean_path, 'w') as result_file:
+            for epoch in range(self.args.communication_epoch):
+                result_file.write('epoch_' + str(epoch))
+                if epoch != self.args.communication_epoch - 1:
+                    result_file.write(',')
+                else:
+                    result_file.write('\n')
+            for i in range(len(acc_list)):
+                result = acc_list[i]
+                result_file.write(str(result))
+                if i != self.args.communication_epoch - 1:
+                    result_file.write(',')
+                else:
+                    result_file.write('\n')
+
+
+    def _write_all_acc(self, all_acc_list):
+        all_path = self.generate_filename('all_acc')
+        with open(all_path, 'w') as result_file:
+            for epoch in range(self.args.communication_epoch):
+                result_file.write('epoch_' + str(epoch))
+                if epoch != self.args.communication_epoch - 1:
+                    result_file.write(',')
+                else:
+                    result_file.write('\n')
+
+            for key in all_acc_list:
+                method_result = all_acc_list[key]
+                for epoch in range(len(method_result)):
+                    result_file.write(str(method_result[epoch]))
+                    if epoch != len(method_result) - 1:
+                        result_file.write(',')
+                    else:
+                        result_file.write('\n')
+
+
+
+    def write_loss(self, loss_dict,loss_name):
+        loss_path = os.path.join(self.para_foloder_path, loss_name+'.pkl')
+        with open(loss_path, 'wb+') as f:
+            pickle.dump(loss_dict, f)
+            f.close()
+
+
+
+utils/training.py:
+import torch
+from argparse import Namespace
+from models.utils.federated_model import FederatedModel
+from datasets.utils.federated_dataset import FederatedDataset
+from typing import Tuple
+from torch.utils.data import DataLoader
+import numpy as np
+from utils.logger import CsvWriter
+from utils.util import generate_online_clients_sequence
+from collections import Counter
+
+def global_evaluate(model: FederatedModel, test_dl: DataLoader, setting: str) -> Tuple[list, list]:
+    accs = []
+    net = model.global_net
+    status = net.training
+    net.eval()
+    for j, dl in enumerate(test_dl):
+        correct, total, top1, top5 = 0.0, 0.0, 0.0, 0.0
+        for batch_idx, (images, labels) in enumerate(dl):
+            with torch.no_grad():
+                images, labels = images.to(model.device), labels.to(model.device)
+                outputs = net(images)
+                _, max5 = torch.topk(outputs, 5, dim=-1)
+                labels = labels.view(-1, 1)
+                top1 += (labels == max5[:, 0:1]).sum().item()
+                top5 += (labels == max5).sum().item()
+                total += labels.size(0)
+        top1acc = round(100 * top1 / total, 2) if total > 0 else 0
+        accs.append(top1acc)
+    net.train(status)
+    return accs
+
+def local_evaluate(model: FederatedModel, test_dl: DataLoader):
+    for client_id in range(model.args.parti_num):
+        acc = []
+        net = model.nets_list[client_id]
+        net.eval()
+        for j, dl in enumerate(test_dl):
+            correct, total, top1 = 0.0, 0.0, 0.0
+            for batch_idx, (images, labels) in enumerate(dl):
+                with torch.no_grad():
+                    images, labels = images.to(model.device), labels.to(model.device)
+                    outputs = net(images)
+                    _, max5 = torch.topk(outputs, 5, dim=-1)
+                    labels = labels.view(-1, 1)
+                    top1 += (labels == max5[:, 0:1]).sum().item()
+                    total += labels.size(0)
+            top1acc = round(100 * top1 / total, 2) if total > 0 else 0
+            acc.append(top1acc)
+        print(client_id, acc)
+        net.train(True)
+        
+    
+
+def train(model: FederatedModel, private_dataset: FederatedDataset,
+          args: Namespace) -> None:
+    if args.csv_log:
+        csv_writer = CsvWriter(args, private_dataset)
+
+    model.N_CLASS = private_dataset.N_CLASS
+    domains_list = private_dataset.DOMAINS_LIST
+    domains_len = len(domains_list)
+
+    if args.rand_dataset:
+        max_num = 10
+        is_ok = False
+
+        while not is_ok:
+            if model.args.dataset == 'fl_officecaltech':
+                selected_domain_list = np.random.choice(domains_list, size=args.parti_num - domains_len, replace=True, p=None)
+                selected_domain_list = list(selected_domain_list) + domains_list
+            elif model.args.dataset == 'fl_digits':
+                selected_domain_list = np.random.choice(domains_list, size=args.parti_num, replace=True, p=None)
+
+            result = dict(Counter(selected_domain_list))
+
+            for k in result:
+                if result[k] > max_num:
+                    is_ok = False
+                    break
+            else:
+                is_ok = True
+
+    else:
+        if model.args.dataset == 'fl_digits':
+            selected_domain_dict = {'mnist': args.mnist, 'usps': args.usps, 'svhn': args.svhn, 'syn': args.syn}
+        elif model.args.dataset == 'fl_officecaltech':
+            selected_domain_dict = {'caltech': args.caltech, 'amazon': args.amazon, 'webcam': args.webcam, 'dslr': args.dslr}
+            
+        selected_domain_list = []
+        for k in selected_domain_dict:
+            domain_num = selected_domain_dict[k]
+            for i in range(domain_num):
+                selected_domain_list.append(k)
+
+        selected_domain_list = np.random.permutation(selected_domain_list)
+
+        result = Counter(selected_domain_list)
+    print(result)
+    print(selected_domain_list)
+    
+    
+    model.dataset_name_list = selected_domain_list
+    model.online_clients_sequence = generate_online_clients_sequence(args.communication_epoch, args.parti_num, args.online_ratio)
+    
+    train_loaders, test_loaders = private_dataset.get_data_loaders(selected_domain_list)
+    model.trainloaders = train_loaders
+    model.testloaders = test_loaders 
+
+    
+    if hasattr(model, 'ini'):
+        model.ini()
+    
+    
+    accs_dict = {}
+    mean_accs_list = []
+    
+    Epoch = args.communication_epoch
+    for epoch_index in range(Epoch):
+        model.epoch_index = epoch_index
+        print(epoch_index)
+        if hasattr(model, 'loc_update'):
+            model.loc_update(train_loaders)
+
+        accs = global_evaluate(model, test_loaders, private_dataset.SETTING)
+        std = np.std(accs, ddof=1)
+        mean_acc = np.mean(accs, axis=0)
+        mean_accs_list.append(mean_acc)
+        for i in range(len(accs)):
+            if i in accs_dict:
+                accs_dict[i].append(accs[i])
+            else:
+                accs_dict[i] = [accs[i]]        
+        
+        
+        combined = [f"{domain}: {acc}" for domain, acc in zip(domains_list, accs)]
+        print(f"The {epoch_index} Communcation Round: Method: {model.args.model}")
+        print(",\t".join(combined))
+        print(f"Mean Accuracy: {mean_acc:.3f}"
+            f"\nStandard Deviation: {std:.3f}\n\n")
+
+    if args.csv_log:
+        csv_writer.write_acc(accs_dict, mean_accs_list)
+
+utils/util.py:
+import os
+import numpy as np
+import torch
+
+def create_if_not_exists(path: str) -> None:
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+
+def save_networks(model, communication_idx):
+    nets_list = model.nets_list
+    model_name = model.NAME
+
+    checkpoint_path = model.checkpoint_path
+    model_path = os.path.join(checkpoint_path, model_name)
+    model_para_path = os.path.join(model_path, 'para')
+    create_if_not_exists(model_para_path)
+    for net_idx, network in enumerate(nets_list):
+        each_network_path = os.path.join(model_para_path, str(communication_idx) + '_' + str(net_idx) + '.ckpt')
+        torch.save(network.state_dict(), each_network_path)
+
+
+        
+def generate_online_clients_sequence(epochs, parti_num, online_ratio):
+    sequence = {}
+    for epoch in range(epochs):
+        total_clients = list(range(parti_num))
+        online_clients = np.random.choice(total_clients, int(parti_num * online_ratio), replace=False).tolist()
+        sequence[epoch] = online_clients
+    return sequence
+
+
+main.py:
+import os
+import sys
+import socket
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
+import warnings
+
+warnings.filterwarnings("ignore")
+
+conf_path = os.getcwd()
+sys.path.append(conf_path)
+sys.path.append(conf_path + '/datasets')
+sys.path.append(conf_path + '/backbone')
+sys.path.append(conf_path + '/models')
+from datasets import Priv_NAMES as DATASET_NAMES
+from models import get_all_models
+from argparse import ArgumentParser
+from utils.args import add_management_args
+from datasets import get_prive_dataset
+from models import get_model
+from utils.training import train
+from utils.best_args import best_args
+from utils.conf import set_random_seed
+
+import torch
+import uuid
+import datetime
+
+
+
+def parse_args():
+    parser = ArgumentParser(description='You Only Need Me', allow_abbrev=False)
+    parser.add_argument('--device_id', type=int, default=0, help='The Device Id for Experiment')
+    
+    parser.add_argument('--communication_epoch', type=int, default=200, help='The Communication Epoch in Federated Learning')
+    parser.add_argument('--local_epoch', type=int, default=10, help='The Local Epoch for each Participant')
+    parser.add_argument('--parti_num', type=int, default=20, help='The Number for Participants')
+    parser.add_argument('--seed', type=int, default=0, help='The random seed.')
+    parser.add_argument('--rand_dataset', type=int, default=0, help='The random seed.')
+
+    parser.add_argument('--model', type=str, default='fedavgheal', 
+                        help='Model name.', choices=get_all_models())
+    parser.add_argument('--structure', type=str, default='homogeneity')
+    parser.add_argument('--dataset', type=str, default='fl_digits', 
+                        choices=DATASET_NAMES, help='Which scenario to perform experiments on.')
+    parser.add_argument('--alpha', type=float, default=0.5, help='alpha of dirichlet sampler.')
+    parser.add_argument('--online_ratio', type=float, default=1, help='The Ratio for Online Clients')
+    parser.add_argument('--learning_decay', type=int, default=0, help='The Option for Learning Rate Decay')
+    parser.add_argument('--averaging', type=str, default='weight', help='The Option for averaging strategy')
+
+    parser.add_argument('--wHEAL', type=int, default=1, help='The CORE of the FedHEAL decides whether to add HEAL to other FL method')
+    parser.add_argument('--threshold', type=float, default=0.3, help='threshold of HEAL')
+    parser.add_argument('--beta', type=float, default=0.4, help='momentum update beta')
+     
+    parser.add_argument('--mnist', type=int, default=5, help='Number of mnist clients')
+    parser.add_argument('--usps', type=int, default=5, help='Number of usps clients')
+    parser.add_argument('--svhn', type=int, default=5, help='Number of svhn clients')
+    parser.add_argument('--syn', type=int, default=5, help='Number of syn clients')
+    
+    parser.add_argument('--caltech', type=int, default=5, help='Number of caltech clients')
+    parser.add_argument('--amazon', type=int, default=5, help='Number of amazon clients')
+    parser.add_argument('--webcam', type=int, default=5, help='Number of webcam clients')
+    parser.add_argument('--dslr', type=int, default=5, help='Number of dslr clients')
+    
+    torch.set_num_threads(4)
+    add_management_args(parser)
+    args = parser.parse_args()
+
+    best = best_args[args.dataset][args.model]
+
+    for key, value in best.items():
+        setattr(args, key, value)
+
+    if args.seed is not None:
+        set_random_seed(args.seed)
+    return args
+
+
+def main(args=None):
+    if args is None:
+        args = parse_args()
+
+    args.conf_jobnum = str(uuid.uuid4())
+    args.conf_timestamp = str(datetime.datetime.now())
+    args.conf_host = socket.gethostname()
+
+    priv_dataset = get_prive_dataset(args)
+
+    backbones_list = priv_dataset.get_backbone(args.parti_num, None)
+
+    model = get_model(backbones_list, args, priv_dataset.get_transform())
+    
+    args.arch = model.nets_list[0].name
+
+    print('{}_{}_{}_{}_{}'.format(args.model, args.parti_num, args.dataset, args.communication_epoch, args.local_epoch))
+
+    train(model, priv_dataset, args)
+
+
+if __name__ == '__main__':
+    main()
+
+
+
+
